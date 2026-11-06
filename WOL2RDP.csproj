@@ -8,5 +8,6 @@
     <AssemblyName>WOL2RDP</AssemblyName>
     <RootNamespace>WOL2RDP</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>app.ico</ApplicationIcon>
   </PropertyGroup>
 </Project>

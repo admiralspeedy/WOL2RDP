@@ -34,18 +34,43 @@ jobs:
             -p:DebugSymbols=false `
             --output ./publish
 
+      # Use a framework-dependent deployment when you want a much smaller EXE.
+      # This requires the .NET 8 Windows Desktop Runtime on the user's machine.
+      - name: Publish smaller framework-dependent executable
+        shell: pwsh
+        run: |
+          dotnet publish ./WOL2RDP.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained false `
+            -p:PublishSingleFile=true `
+            -p:DebugType=none `
+            -p:DebugSymbols=false `
+            --output ./publish-small
+
       - name: Add blank configuration template
         shell: pwsh
         run: |
           Copy-Item ./config.example.cfg ./publish/config.cfg
+          Copy-Item ./config.example.cfg ./publish-small/config.cfg
           if (!(Test-Path ./publish/WOL2RDP.exe)) { throw 'Executable not produced' }
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: WOL2RDP-win-x64
           path: |
             publish/WOL2RDP.exe
             publish/config.cfg
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload smaller framework-dependent artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: WOL2RDP-win-x64-small-requires-dotnet8
+          path: |
+            publish-small/WOL2RDP.exe
+            publish-small/config.cfg
           if-no-files-found: error
           retention-days: 30

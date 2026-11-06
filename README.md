@@ -9,7 +9,12 @@ A small Windows C# / WinForms helper: send a Wake-on-LAN magic packet, show an a
 3. Edit `config.cfg` and place your `.rdp` file alongside `WOL2RDP.exe`.
 4. Double-click `WOL2RDP.exe`.
 
-The Windows build is **self-contained**: no .NET runtime installation is required on the destination computer. The app's EXE is **not code-signed** by GitHub Actions.
+The workflow provides **two builds**:
+
+- **WOL2RDP-win-x64**: self-contained single-file executable, around tens of MB because it includes the .NET runtime; no extra runtime installation is needed.
+- **WOL2RDP-win-x64-small-requires-dotnet8**: smaller single-file executable requiring the [.NET 8 Windows Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) on the destination computer.
+
+Avoid trimming WinForms projects just to reduce size; it can cause runtime issues. The app's EXE is **not code-signed** by GitHub Actions.
 
 ## Configuration
 
@@ -21,13 +26,15 @@ Create a `config.cfg` beside the executable (or rename a copy of `config.example
 wolDestination=
 macAddress=
 rdpFile=connection.rdp
+timeoutSeconds=120
 ```
 
 - `wolDestination`: IPv4 destination for the WoL magic packet, usually your LAN's broadcast address.
 - `macAddress`: target MAC in `AA:BB:CC:DD:EE:FF` format (colons or dashes).
 - `rdpFile`: name of the `.rdp` file located beside the executable.
+- `timeoutSeconds`: maximum wait for the RDP port, in seconds; `0` disables the timeout (Cancel still works). If omitted, the default is 120 seconds.
 
-The helper reads the RDP host and optional port from the RDP file. It uses UDP port 9 for WoL, waits up to 120 seconds for TCP connectivity, then launches the RDP profile unmodified via `mstsc.exe`. The file may be a signed RDP profile; changing its contents after signing can invalidate its signature. The helper neither handles nor stores RDP passwords.
+The helper reads the RDP host and optional port from the RDP file. It uses UDP port 9 for WoL, waits for TCP connectivity according to `timeoutSeconds`, then launches the RDP profile unmodified via `mstsc.exe`. The file may be a signed RDP profile; changing its contents after signing can invalidate its signature. The helper neither handles nor stores RDP passwords.
 
 ## Standard .NET build (no batch file)
 
@@ -52,3 +59,17 @@ Copy your signed `connection.rdp` to the `publish` directory; edit the `publish/
 - Build is performed on a GitHub-hosted Windows runner.
 - The application can be built using the standard .NET SDK or the included GitHub Actions workflow.
 - Keep RDP on your trusted local network.
+
+## Appearance and icon
+
+The small UI follows Windows' **AppsUseLightTheme** preference, including its title bar on Windows 11. A custom animated spinner is colored appropriately for dark/light mode. Theme changes while the app is open are applied when Windows signals a preference change.
+
+The placeholder icon is `app.ico`, with editable high-resolution reference in `app-icon.png`. To replace it, generate a multi-resolution `.ico` with the **same filename** and rebuild. It is embedded through `<ApplicationIcon>` in the project file; you do not need to change C# source.
+
+## Smaller build (requires .NET 8 Windows Desktop Runtime)
+
+```powershell
+dotnet publish WOL2RDP.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o publish-small
+```
+
+The GitHub workflow builds both this smaller version and the self-contained version.

@@ -4,6 +4,8 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
+using System.Runtime.InteropServices;
+using Microsoft.Win32;
 
 namespace WOL2RDP;
 
@@ -23,16 +25,15 @@ internal sealed class WakeForm : Form
     // UDP port 9 is the conventional Wake-on-LAN discard port. The listener
     // identifies the VM by MAC address inside the packet, not by the UDP port.
     private const int WolUdpPort = 9;
-    // Give the VM time to boot and bring GNOME Remote Login online.
-    private static readonly TimeSpan MaxWait = TimeSpan.FromSeconds(120);
 
     // Form controls remain on the UI thread; awaited network calls keep the
     // indeterminate progress indicator responsive while we wait for Ubuntu.
     private readonly Label status = new();
     private readonly Label details = new();
-    private readonly ProgressBar spinner = new();
+    private readonly WakeSpinner spinner = new();
     private readonly Button cancel = new();
     private readonly CancellationTokenSource cancellation = new();
+    private bool darkMode;
 
     // Construct the small, fixed-size connection window programmatically;
     // no WinForms designer-generated files are needed in the repository.
@@ -54,19 +55,21 @@ internal sealed class WakeForm : Form
         details.Text = "Reading configuration…";
         details.ForeColor = SystemColors.GrayText;
 
-        spinner.SetBounds(22, 102, 334, 15);
-        // Marquee represents an unknown boot duration, not a percentage.
-        spinner.Style = ProgressBarStyle.Marquee;
-        spinner.MarqueeAnimationSpeed = 25;
+        spinner.SetBounds(22, 101, 334, 16);
+        // A custom spinner avoids the bright native progress-bar background
+        // when Windows is configured to use dark application mode.
 
         cancel.SetBounds(252, 127, 104, 29);
         cancel.Text = "Cancel";
         cancel.Click += (_, _) => { cancellation.Cancel(); cancel.Enabled = false; };
 
         Controls.AddRange(new Control[] { status, details, spinner, cancel });
+        ApplyTheme();
+        SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
         // Start after the window appears so the user sees progress immediately.
         Shown += async (_, _) => await RunAsync();
         FormClosing += (_, _) => cancellation.Cancel();
+        FormClosed += (_, _) => SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
     }
 
     // Main sequence: load configuration -> read the signed RDP profile ->
@@ -93,14 +96,18 @@ internal sealed class WakeForm : Form
             SendWol(config.MacAddress, config.WolDestination, WolUdpPort);
 
             status.Text = "Waiting for RDP…";
+            // 0 disables the overall deadline; cancellation still works.
+            int timeoutSeconds = config.TimeoutSeconds;
             Stopwatch watch = Stopwatch.StartNew();
             // Poll repeatedly rather than sleeping a fixed number of seconds:
             // an already-running VM connects quickly, while a cold boot gets
-            // the full MaxWait deadline.
-            while (watch.Elapsed < MaxWait)
+            // the configured deadline (or waits indefinitely if set to 0).
+            while (timeoutSeconds == 0 || watch.Elapsed < TimeSpan.FromSeconds(timeoutSeconds))
             {
                 cancellation.Token.ThrowIfCancellationRequested();
-                details.Text = $"Checking {host}:{port}  •  {Math.Max(0, (int)(MaxWait - watch.Elapsed).TotalSeconds)}s left";
+                details.Text = timeoutSeconds == 0
+                    ? $"Checking {host}:{port}  •  Waiting until available"
+                    : $"Checking {host}:{port}  •  {Math.Max(0, (int)(timeoutSeconds - watch.Elapsed.TotalSeconds))}s left";
                 using var client = new TcpClient();
                 try
                 {
@@ -113,8 +120,7 @@ internal sealed class WakeForm : Form
                     {
                         status.Text = "RDP is ready!";
                         details.Text = "Opening your signed RDP connection…";
-                        spinner.Style = ProgressBarStyle.Continuous;
-                        spinner.Value = 100;
+                        spinner.Stop();
                         // Open the ORIGINAL RDP file as-is. Its settings and
                         // digital signature are never rewritten by this app.
                         Process.Start(new ProcessStartInfo
@@ -143,7 +149,7 @@ internal sealed class WakeForm : Form
                 // Respect cancellation between attempts as well.
                 await Task.Delay(TimeSpan.FromSeconds(2), cancellation.Token);
             }
-            throw new TimeoutException($"No RDP connection at {host}:{port} after {(int)MaxWait.TotalSeconds} seconds. The wake packet was sent; verify the target is online and check the address in your RDP file.");
+            throw new TimeoutException($"No RDP connection at {host}:{port} after {timeoutSeconds} seconds. The wake packet was sent; verify the target is online and check the address in your RDP file.");
         }
         // Cancel closes the form without reporting a connection failure.
         catch (OperationCanceledException)
@@ -152,11 +158,10 @@ internal sealed class WakeForm : Form
         }
         catch (Exception ex)
         {
-            spinner.Style = ProgressBarStyle.Continuous;
-            spinner.Value = 0;
+            spinner.Stop();
             status.Text = "Could not connect";
             details.Text = ex.Message;
-            details.ForeColor = Color.Firebrick;
+            details.ForeColor = darkMode ? Color.FromArgb(255, 115, 115) : Color.Firebrick;
             details.AutoEllipsis = true;
             cancel.Enabled = true;
             cancel.Text = "Close";
@@ -165,8 +170,57 @@ internal sealed class WakeForm : Form
         }
     }
 
+    // Follow Windows' AppsUseLightTheme user preference for the form, controls,
+    // and title bar. No external theme package is required.
+    private static bool IsWindowsDarkMode()
+    {
+        using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
+            @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+        return key?.GetValue("AppsUseLightTheme") is int value && value == 0;
+    }
+
+    private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
+    {
+        if (!IsHandleCreated || IsDisposed) return;
+        try { BeginInvoke((Action)ApplyTheme); }
+        catch (InvalidOperationException) { /* Window is closing. */ }
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        ApplyTheme();
+    }
+
+    private void ApplyTheme()
+    {
+        darkMode = IsWindowsDarkMode();
+        BackColor = darkMode ? Color.FromArgb(29, 32, 38) : SystemColors.Control;
+        ForeColor = darkMode ? Color.FromArgb(238, 241, 245) : SystemColors.ControlText;
+        status.ForeColor = ForeColor;
+        details.ForeColor = darkMode ? Color.FromArgb(178, 187, 199) : SystemColors.GrayText;
+        cancel.FlatStyle = FlatStyle.Flat;
+        cancel.FlatAppearance.BorderSize = 1;
+        cancel.FlatAppearance.BorderColor = darkMode ? Color.FromArgb(92, 103, 119) : Color.FromArgb(175, 175, 175);
+        cancel.BackColor = darkMode ? Color.FromArgb(54, 61, 72) : Color.FromArgb(245, 245, 245);
+        cancel.ForeColor = ForeColor;
+        spinner.SetTheme(darkMode);
+
+        if (IsHandleCreated && OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+        {
+            // DWMWA_USE_IMMERSIVE_DARK_MODE (20): Win11 draws the title bar
+            // to match the app preference. This does not style child controls.
+            int enableDark = darkMode ? 1 : 0;
+            DwmSetWindowAttribute(Handle, 20, ref enableDark, sizeof(int));
+        }
+    }
+
+    [DllImport("dwmapi.dll", PreserveSig = true)]
+    private static extern int DwmSetWindowAttribute(
+        IntPtr hwnd, int attribute, ref int value, int valueSize);
+
     // Parse a deliberately simple key=value file. Blank lines and lines
-    // beginning with # or ; are comments. All three keys are required.
+    // beginning with # or ; are comments. Three connection keys are required.
     private static async Task<HelperConfig> LoadConfigAsync(CancellationToken token)
     {
         string path = Path.Combine(AppContext.BaseDirectory, "config.cfg");
@@ -188,7 +242,7 @@ internal sealed class WakeForm : Form
 
             string key = line[..separator].Trim();
             string value = line[(separator + 1)..].Trim();
-            if (!new[] { "wolDestination", "macAddress", "rdpFile" }.Contains(key, StringComparer.OrdinalIgnoreCase))
+            if (!new[] { "wolDestination", "macAddress", "rdpFile", "timeoutSeconds" }.Contains(key, StringComparer.OrdinalIgnoreCase))
                 throw new InvalidDataException($"Unknown config.cfg setting '{key}' on line {index + 1}.");
             if (!values.TryAdd(key, value))
                 throw new InvalidDataException($"Duplicate config.cfg setting '{key}' on line {index + 1}.");
@@ -204,6 +258,15 @@ internal sealed class WakeForm : Form
         if (string.IsNullOrWhiteSpace(config.WolDestination) ||
             string.IsNullOrWhiteSpace(config.MacAddress) || string.IsNullOrWhiteSpace(config.RdpFile))
             throw new InvalidDataException("config.cfg needs wolDestination, macAddress, and rdpFile.");
+
+        // Missing timeoutSeconds retains the original 120-second default.
+        // 0 means never time out. Negative or malformed values are rejected.
+        if (values.ContainsKey("timeoutSeconds"))
+        {
+            if (!int.TryParse(Setting("timeoutSeconds"), out int timeout) || timeout < 0)
+                throw new InvalidDataException("timeoutSeconds must be a non-negative integer (0 means no timeout).");
+            config.TimeoutSeconds = timeout;
+        }
 
         // Use an explicit IPv4 destination, typically a subnet broadcast
         // address (for example 192.168.3.255 on a 192.168.0.0/22 LAN).
@@ -285,4 +348,49 @@ internal sealed class HelperConfig
     public string WolDestination { get; set; } = "";
     public string MacAddress { get; set; } = "";
     public string RdpFile { get; set; } = "";
+    public int TimeoutSeconds { get; set; } = 120;
+}
+
+// Lightweight WinForms spinner drawn with GDI+: independent of themed
+// ProgressBar behavior, so it looks appropriate in both Windows themes.
+internal sealed class WakeSpinner : Control
+{
+    private readonly System.Windows.Forms.Timer timer = new() { Interval = 90 };
+    private int step;
+    private bool dark;
+
+    public WakeSpinner()
+    {
+        DoubleBuffered = true;
+        timer.Tick += (_, _) => { step = (step + 1) % 12; Invalidate(); };
+        timer.Start();
+    }
+
+    public void SetTheme(bool isDark) { dark = isDark; Invalidate(); }
+    public void Stop() { timer.Stop(); Invalidate(); }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        float cx = 9, cy = Height / 2f;
+        for (int i = 0; i < 12; i++)
+        {
+            double angle = i * Math.PI / 6;
+            int age = (i - step + 12) % 12;
+            int alpha = 40 + (11 - age) * 18;
+            Color color = dark ? Color.FromArgb(alpha, 141, 192, 255)
+                               : Color.FromArgb(alpha, 32, 105, 190);
+            using var brush = new SolidBrush(color);
+            float x = cx + (float)Math.Cos(angle) * 6;
+            float y = cy + (float)Math.Sin(angle) * 6;
+            e.Graphics.FillEllipse(brush, x - 1.6f, y - 1.6f, 3.2f, 3.2f);
+        }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) timer.Dispose();
+        base.Dispose(disposing);
+    }
 }
