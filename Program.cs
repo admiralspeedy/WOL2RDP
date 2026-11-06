@@ -40,26 +40,27 @@ internal sealed class WakeForm : Form
     public WakeForm()
     {
         Text = "WOL2RDP";
-        ClientSize = new Size(380, 166);
+        ClientSize = new Size(380, 151);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = true;
         StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Segoe UI", 10);
 
-        status.SetBounds(22, 20, 334, 26);
+        status.SetBounds(80, 22, 276, 26);
         status.Text = "Preparing connection…";
         status.Font = new Font("Segoe UI", 11, FontStyle.Bold);
 
-        details.SetBounds(22, 52, 334, 38);
+        details.SetBounds(80, 53, 276, 48);
         details.Text = "Reading configuration…";
         details.ForeColor = SystemColors.GrayText;
 
-        spinner.SetBounds(22, 101, 334, 16);
+        // Keep the spinner beside the status/details text, not below it.
+        spinner.SetBounds(24, 34, 42, 42);
         // A custom spinner avoids the bright native progress-bar background
         // when Windows is configured to use dark application mode.
 
-        cancel.SetBounds(252, 127, 104, 29);
+        cancel.SetBounds(252, 110, 104, 29);
         cancel.Text = "Cancel";
         cancel.Click += (_, _) => { cancellation.Cancel(); cancel.Enabled = false; };
 
@@ -99,15 +100,24 @@ internal sealed class WakeForm : Form
             // 0 disables the overall deadline; cancellation still works.
             int timeoutSeconds = config.TimeoutSeconds;
             Stopwatch watch = Stopwatch.StartNew();
+            // Update the countdown independently of network attempts, which can
+            // take several seconds each. The label now updates every second.
+            using var countdownTimer = new System.Windows.Forms.Timer { Interval = 250 };
+            void UpdateCountdown()
+            {
+                details.Text = timeoutSeconds == 0
+                    ? $"Checking {host}:{port}  •  Waiting {watch.Elapsed.TotalSeconds:F0}s"
+                    : $"Checking {host}:{port}  •  {Math.Max(0, (int)Math.Ceiling(timeoutSeconds - watch.Elapsed.TotalSeconds))}s left";
+            }
+            countdownTimer.Tick += (_, _) => UpdateCountdown();
+            UpdateCountdown();
+            countdownTimer.Start();
             // Poll repeatedly rather than sleeping a fixed number of seconds:
             // an already-running VM connects quickly, while a cold boot gets
             // the configured deadline (or waits indefinitely if set to 0).
             while (timeoutSeconds == 0 || watch.Elapsed < TimeSpan.FromSeconds(timeoutSeconds))
             {
                 cancellation.Token.ThrowIfCancellationRequested();
-                details.Text = timeoutSeconds == 0
-                    ? $"Checking {host}:{port}  •  Waiting until available"
-                    : $"Checking {host}:{port}  •  {Math.Max(0, (int)(timeoutSeconds - watch.Elapsed.TotalSeconds))}s left";
                 using var client = new TcpClient();
                 try
                 {
@@ -118,6 +128,7 @@ internal sealed class WakeForm : Form
                     await client.ConnectAsync(host, port, attempt.Token);
                     if (client.Connected)
                     {
+                        countdownTimer.Stop();
                         status.Text = "RDP is ready!";
                         details.Text = "Opening your signed RDP connection…";
                         spinner.Stop();
@@ -195,15 +206,18 @@ internal sealed class WakeForm : Form
     private void ApplyTheme()
     {
         darkMode = IsWindowsDarkMode();
-        BackColor = darkMode ? Color.FromArgb(29, 32, 38) : SystemColors.Control;
-        ForeColor = darkMode ? Color.FromArgb(238, 241, 245) : SystemColors.ControlText;
+        // Windows provides the app theme preference, not a universal dark
+        // control background. Use neutral Windows 11-style dark surfaces.
+        BackColor = darkMode ? Color.FromArgb(32, 32, 32) : SystemColors.Control;
+        ForeColor = darkMode ? Color.FromArgb(243, 243, 243) : SystemColors.ControlText;
         status.ForeColor = ForeColor;
-        details.ForeColor = darkMode ? Color.FromArgb(178, 187, 199) : SystemColors.GrayText;
-        cancel.FlatStyle = FlatStyle.Flat;
+        details.ForeColor = darkMode ? Color.FromArgb(176, 176, 176) : SystemColors.GrayText;
+        cancel.FlatStyle = darkMode ? FlatStyle.Flat : FlatStyle.System;
         cancel.FlatAppearance.BorderSize = 1;
-        cancel.FlatAppearance.BorderColor = darkMode ? Color.FromArgb(92, 103, 119) : Color.FromArgb(175, 175, 175);
-        cancel.BackColor = darkMode ? Color.FromArgb(54, 61, 72) : Color.FromArgb(245, 245, 245);
+        cancel.FlatAppearance.BorderColor = Color.FromArgb(80, 80, 80);
+        cancel.BackColor = darkMode ? Color.FromArgb(45, 45, 45) : SystemColors.Control;
         cancel.ForeColor = ForeColor;
+        spinner.BackColor = BackColor;
         spinner.SetTheme(darkMode);
 
         if (IsHandleCreated && OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
@@ -373,18 +387,18 @@ internal sealed class WakeSpinner : Control
     {
         base.OnPaint(e);
         e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-        float cx = 9, cy = Height / 2f;
+        float cx = Width / 2f, cy = Height / 2f;
         for (int i = 0; i < 12; i++)
         {
             double angle = i * Math.PI / 6;
             int age = (i - step + 12) % 12;
             int alpha = 40 + (11 - age) * 18;
-            Color color = dark ? Color.FromArgb(alpha, 141, 192, 255)
+            Color color = dark ? Color.FromArgb(alpha, 235, 235, 235)
                                : Color.FromArgb(alpha, 32, 105, 190);
             using var brush = new SolidBrush(color);
-            float x = cx + (float)Math.Cos(angle) * 6;
-            float y = cy + (float)Math.Sin(angle) * 6;
-            e.Graphics.FillEllipse(brush, x - 1.6f, y - 1.6f, 3.2f, 3.2f);
+            float x = cx + (float)Math.Cos(angle) * 13;
+            float y = cy + (float)Math.Sin(angle) * 13;
+            e.Graphics.FillEllipse(brush, x - 2.6f, y - 2.6f, 5.2f, 5.2f);
         }
     }
 
