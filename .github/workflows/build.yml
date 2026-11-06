@@ -1,0 +1,51 @@
+name: Build WOL2RDP
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish self-contained Windows executable
+        shell: pwsh
+        run: |
+          dotnet publish ./WOL2RDP.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:EnableCompressionInSingleFile=true `
+            -p:DebugType=none `
+            -p:DebugSymbols=false `
+            --output ./publish
+
+      - name: Add blank configuration template
+        shell: pwsh
+        run: |
+          Copy-Item ./config.example.cfg ./publish/config.cfg
+          if (!(Test-Path ./publish/WOL2RDP.exe)) { throw 'Executable not produced' }
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WOL2RDP-win-x64
+          path: |
+            publish/WOL2RDP.exe
+            publish/config.cfg
+          if-no-files-found: error
+          retention-days: 30

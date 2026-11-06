@@ -1,0 +1,13 @@
+# Local/private settings and signed connection profiles
+config.cfg
+*.rdp
+
+# .NET / IDE output
+[Bb]in/
+[Oo]bj/
+publish/
+.vs/
+*.user
+*.suo
+.idea/
+.vscode/
